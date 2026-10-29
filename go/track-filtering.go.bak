@@ -1,0 +1,219 @@
+package main
+
+import (
+    "encoding/json"
+    "fmt"
+    "os"
+    "time"
+    "math"
+    "github.com/jonas-p/go-shp"
+)
+
+const (
+    MAX_SPEED = 20  // максимальная допустимая скорость в узлах
+    DIFF_SPEED = 7  // допустимая разница скорости в данных и расчетной скорости
+    SHAPEFILE  = "/opt/filter/restrict.shp"
+)
+
+// Point представляет точку с координатами и временем
+type Point struct {
+    Lat        float64 `json:"lat"`
+    Lon        float64 `json:"lon"`
+    Speed      float64 `json:"speed"`
+    Datetime   string  `json:"datetime"`
+    ShipId     int     `json:"ship_id"`
+    Course     float64 `json:"course"`
+    SourceId   int     `json:"source_id"`
+    Heading    float64 `json:"heading"`
+    Id         int64   `json:"id"`
+}
+
+// Polygon представляет полигон как набор координат
+type Polygon struct {
+    Points []Point
+}
+
+// loadPolygonsFromShapefile загружает полигоны из shapefile
+func loadPolygonsFromShapefile(filename string) ([]Polygon, error) {
+    file, err := shp.Open(filename)
+    if err != nil {
+	return nil, err
+    }
+    defer file.Close()
+
+
+    polygons := []Polygon{}
+
+    for file.Next() {
+	_, shape := file.Shape()
+
+	if shape == nil {
+	    continue
+	}
+
+
+	if polyline, ok := shape.(*shp.Polygon); ok {
+
+	    polygon := Polygon{}
+	    for _, point := range polyline.Points {
+		polygon.Points = append(polygon.Points, Point{Lat: point.Y, Lon: point.X})
+	    }
+	    polygons = append(polygons, polygon)
+
+	}
+    }
+
+    return polygons, nil
+}
+
+// isPointInPolygon проверяет, находится ли точка внутри полигона
+func isPointInPolygon(point Point, polygon Polygon) bool {
+    count := 0
+    n := len(polygon.Points)
+
+    for i := 0; i < n; i++ {
+	p1 := polygon.Points[i]
+	p2 := polygon.Points[(i+1)%n]
+
+	if (point.Lat > math.Min(p1.Lat, p2.Lat)) && (point.Lat <= math.Max(p1.Lat, p2.Lat)) &&
+	    (point.Lon <= math.Max(p1.Lon, p2.Lon)) {
+	    if p1.Lat != p2.Lat {
+		xinters := (point.Lat-p1.Lat)*(p2.Lon-p1.Lon)/(p2.Lat-p1.Lat) + p1.Lon
+		if p1.Lon == p2.Lon || point.Lon <= xinters {
+		    count++
+		}
+	    }
+	}
+    }
+
+    return count%2 != 0
+}
+
+// isPointInPolygons проверяет, находится ли точка внутри любого полигона
+func isPointInPolygons(point Point, polygons []Polygon) bool {
+    for _, polygon := range polygons {
+	if isPointInPolygon(point, polygon) {
+	    return true
+	}
+    }
+    return false
+}
+
+// calculateSpeed вычисляет скорость между двумя точками
+func calculateSpeed(point1, point2 Point) float64 {
+    lat1, lon1 := point1.Lat, point1.Lon
+    lat2, lon2 := point2.Lat, point2.Lon
+    distance := haversine(lat1, lon1, lat2, lon2) // расстояние в морских милях
+
+//Формат времени: 1 месяц, 2-е число, 3 часа,4 минуты, 5 секунд 6-го года
+    layout := "2006-01-02 15:04:05"
+
+//    time1, err1 := time.Parse(time.RFC3339, point1.Datetime)
+//    time2, err2 := time.Parse(time.RFC3339, point2.Datetime)
+
+    time1, err1 := time.Parse(layout, point1.Datetime)
+    time2, err2 := time.Parse(layout, point2.Datetime)
+
+
+    if err1 != nil || err2 != nil {
+	return -1
+    }
+
+    timeDiff := time2.Sub(time1).Hours()
+    if timeDiff == 0 {
+	return -1
+    }
+
+    return distance / timeDiff
+}
+
+// haversine вычисляет расстояние между двумя координатами в морских милях
+func haversine(lat1, lon1, lat2, lon2 float64) float64 {
+    const R = 3440.065 // радиус Земли в морских милях
+    dLat := (lat2 - lat1) * math.Pi / 180
+    dLon := (lon2 - lon1) * math.Pi / 180
+
+    lat1 = lat1 * math.Pi / 180
+    lat2 = lat2 * math.Pi / 180
+
+    a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+	math.Cos(lat1)*math.Cos(lat2)*
+	math.Sin(dLon/2)*math.Sin(dLon/2)
+
+    c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
+    return R * c
+}
+
+// filterTrajectory фильтрует траекторию на основе заданных условий
+func filterTrajectory(data []Point, restrictedAreas []Polygon, maxSpeed float64) []Point {
+    filtered := []Point{}
+
+    for _, point := range data {
+
+	if len(filtered) == 0 {
+	    if !isPointInPolygons(point, restrictedAreas) && point.Speed <= maxSpeed {
+		filtered = append(filtered, point)
+	    }
+	    continue
+	}
+
+
+	lastPoint := filtered[len(filtered)-1]
+	calculatedSpeed := calculateSpeed(lastPoint, point)
+
+
+	if calculatedSpeed > 0 &&
+	    point.Speed <= maxSpeed &&
+	    calculatedSpeed <= maxSpeed &&
+	    math.Abs(calculatedSpeed-point.Speed) < DIFF_SPEED &&
+	    !isPointInPolygons(point, restrictedAreas) {
+	    filtered = append(filtered, point)
+	}
+    }
+
+    return filtered
+}
+
+func main() {
+    polygons, err := loadPolygonsFromShapefile(SHAPEFILE)
+
+    if err != nil {
+	fmt.Fprintln(os.Stderr, "Error loading shapefile:", err)
+	os.Exit(1)
+    }
+
+    var inputData struct {
+	Data map[string][]Point `json:"data"`
+    }
+
+    decoder := json.NewDecoder(os.Stdin)
+    if err := decoder.Decode(&inputData); err != nil {
+	fmt.Fprintln(os.Stderr, "Error decoding JSON input:", err)
+	os.Exit(1)
+    }
+
+    filteredData := make(map[string][]Point)
+    for ship, track := range inputData.Data {
+	reverse(track)
+	filteredTrack := filterTrajectory(track, polygons, MAX_SPEED)
+	reverse(filteredTrack)
+	filteredData[ship] = filteredTrack
+    }
+
+    outputData := struct {
+	Data map[string][]Point `json:"data"`
+    }{
+	Data: filteredData,
+    }
+
+    if err := json.NewEncoder(os.Stdout).Encode(outputData); err != nil {
+	fmt.Fprintln(os.Stderr, "Error encoding JSON output:", err)
+	os.Exit(1)
+    }
+}
+
+func reverse(points []Point) {
+    for i, j := 0, len(points)-1; i < j; i, j = i+1, j-1 {
+	points[i], points[j] = points[j], points[i]
+    }
+}

@@ -1,0 +1,18 @@
+#!/bin/bash
+
+# Устанавливаем заголовок ответа
+echo "Content-Type: application/json"
+#echo "Content-Type: text/plain"
+echo ""
+
+# Проверяем, что метод запроса - GET
+if [ "$REQUEST_METHOD" != "GET" ]; then
+    echo '{"status": "error", "message": "Method Not Allowed"}'
+    exit 1
+fi
+
+QUERY=$(echo ${QUERY_STRING// /+})
+
+#curl  -k -s -H "User-Agent: $HTTP_USER_AGENT" -H "Referer: http://10.72.0.22/victoria-next/map" http://10.40.1.57/cgi-bin/api/get/track.pl?$QUERY | /opt/filter/track_filtering.py 
+curl  -k -s -H "User-Agent: $HTTP_USER_AGENT" -H "Referer: http://10.72.0.22/victoria-next/map" http://10.40.1.57/cgi-bin/api/get/track.pl?$QUERY | /opt/filter/track-filtering
+

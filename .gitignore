@@ -1,0 +1,18 @@
+# Игнорируемые файлы (среда разработки и артефакты сборки)
+.idea/
+filter.iml
+.venv/
+
+# Локальные переменные окружения (шаблон настроек — .env.example)
+.env
+
+# Сгенерированные синтетические входные данные для бенчмарка
+data/big-input.json
+
+# Артефакты сборки
+rust/target/
+
+# Компилируемые бинарники (bash-скрипт bin/track-filtered не игнорируется)
+bin/track-filtering
+bin/track-filtering.bak
+bin/track-filtering-go
