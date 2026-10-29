@@ -16,3 +16,4 @@ rust/target/
 bin/track-filtering
 bin/track-filtering.bak
 bin/track-filtering-go
+/filter-bad-positions.iml
